@@ -1,4 +1,4 @@
-#Cheap thrills readme
+# Cheap thrills readme
 1) install go
 2) open folder in which git cloned
 3) go mod tidy
