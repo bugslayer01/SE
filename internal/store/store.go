@@ -18,38 +18,62 @@ var (
 	db          *mongo.Database
 	usersCol    *mongo.Collection
 	stateCol    *mongo.Collection
+	sessionsCol *mongo.Collection
 )
 
+// InitStore initializes the MongoDB connection and collections
 func InitStore(ctx context.Context) error {
-	uri := os.Getenv("MONGO_URI")
-	clientOpts := options.Client().ApplyURI(uri)
-	c, err := mongo.Connect(ctx, clientOpts)
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		return errors.New("MONGO_URI not set")
+	}
+
+	// Connect to MongoDB
+	clientOptions := options.Client().ApplyURI(mongoURI)
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		return err
 	}
-	if err := c.Ping(ctx, nil); err != nil {
+
+	// Ping to verify connection
+	if err := client.Ping(ctx, nil); err != nil {
 		return err
 	}
-	mongoClient = c
-	db = c.Database("drive_backend")
+
+	mongoClient = client
+	db = client.Database("vaultcrypt")
 	usersCol = db.Collection("users")
 	stateCol = db.Collection("oauth_states")
+	sessionsCol = db.Collection("upload_sessions")
 
-	// Create TTL index for oauth states
-	_, err = stateCol.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.M{"created_at": 1},
-		Options: options.Index().SetExpireAfterSeconds(600),
+	// Create indexes
+	// Users collection - unique email index
+	_, err = usersCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "email", Value: 1}},
+		Options: options.Index().SetUnique(true),
 	})
 	if err != nil {
 		return err
 	}
 
-	// Create unique index on email
-	_, err = usersCol.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.M{"email": 1},
-		Options: options.Index().SetUnique(true),
+	// Sessions collection - TTL index for expiry
+	_, err = sessionsCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "expires_at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(0),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Sessions collection - user_id index for queries
+	_, err = sessionsCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}},
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func DisconnectStore(ctx context.Context) error {
@@ -132,16 +156,6 @@ func GetDriveAccountByID(ctx context.Context, accountID primitive.ObjectID) (*mo
 }
 
 // Upload Session Management
-var sessionsCol *mongo.Collection
-
-func initSessionsCollection(ctx context.Context) {
-	sessionsCol = db.Collection("upload_sessions")
-	// Create TTL index for session expiry
-	_, _ = sessionsCol.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.M{"expires_at": 1},
-		Options: options.Index().SetExpireAfterSeconds(0),
-	})
-}
 
 func CreateUploadSession(ctx context.Context, session *models.UploadSession) error {
 	if sessionsCol == nil {

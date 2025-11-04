@@ -2,6 +2,8 @@ package main
 
 import (
 	"SE/internal/auth"
+	"SE/internal/filehandlers"
+	"SE/internal/fileprocessor"
 	"SE/internal/handlers"
 	"SE/internal/oauth"
 	"SE/internal/store"
@@ -47,12 +49,27 @@ func main() {
 	// Initialize oauth config
 	oauth.InitOAuthConfig()
 
+	// Initialize file processor config
+	fileprocessor.InitFileConfig()
+
 	// Setup routes
 	mux := http.NewServeMux()
+
+	// Authentication routes
 	mux.HandleFunc("/api/signup", requireMethod("POST", auth.SignupHandler))
 	mux.HandleFunc("/api/login", requireMethod("POST", auth.LoginHandler))
+
+	// Drive OAuth routes
 	mux.HandleFunc("/api/drive/link", auth.AuthMiddleware(requireMethod("GET", oauth.DriveLinkHandler)))
 	mux.HandleFunc("/api/drive/accounts", auth.AuthMiddleware(requireMethod("GET", handlers.ListDriveAccountsHandler)))
+	mux.HandleFunc("/api/drive/space", auth.AuthMiddleware(requireMethod("GET", filehandlers.GetDriveSpacesHandler)))
+
+	// File upload routes
+	mux.HandleFunc("/api/files/upload/initiate", auth.AuthMiddleware(requireMethod("POST", filehandlers.InitiateUploadHandler)))
+	mux.HandleFunc("/api/files/upload/chunk", auth.AuthMiddleware(requireMethod("POST", filehandlers.UploadChunkHandler)))
+	mux.HandleFunc("/api/files/upload/finalize", auth.AuthMiddleware(requireMethod("POST", filehandlers.FinalizeUploadHandler)))
+	mux.HandleFunc("/api/files/upload/status/", auth.AuthMiddleware(requireMethod("GET", filehandlers.GetUploadStatusHandler)))
+	mux.HandleFunc("/api/files/chunking/calculate", auth.AuthMiddleware(requireMethod("POST", filehandlers.CalculateChunkingHandler)))
 
 	// OAuth callback (no auth header; state validated via DB)
 	mux.HandleFunc("/oauth2/callback", requireMethod("GET", oauth.OauthCallbackHandler))
