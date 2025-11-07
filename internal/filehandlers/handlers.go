@@ -4,6 +4,7 @@ import (
 	"SE/internal/drivemanager"
 	"SE/internal/fileprocessor"
 	"SE/internal/models"
+	"SE/internal/store"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -124,17 +125,24 @@ func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update session progress
-	newUploaded := session.UploadedSize + written
-	if err := fileprocessor.UpdateSessionProgress(r.Context(), sessionID, newUploaded); err != nil {
-		log.Printf("Failed to update session progress: %v", err)
+	// Calculate progress based on highest offset reached
+	// offset is where chunk starts, written is how many bytes were written
+	highestByte := offset + written
+
+	// Only update if this chunk extends beyond current progress
+	// This handles out-of-order uploads correctly
+	if highestByte > session.UploadedSize {
+		if err := fileprocessor.UpdateSessionProgress(r.Context(), sessionID, highestByte); err != nil {
+			log.Printf("Failed to update session progress: %v", err)
+		}
+		session.UploadedSize = highestByte // Update local copy for response
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"uploaded": newUploaded,
+		"uploaded": session.UploadedSize,
 		"total":    session.TotalSize,
-		"progress": float64(newUploaded) / float64(session.TotalSize) * 100,
+		"progress": float64(session.UploadedSize) / float64(session.TotalSize) * 100,
 	})
 }
 
@@ -168,11 +176,19 @@ func FinalizeUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update status to processing
-	fileprocessor.UpdateSessionStatus(r.Context(), sessionID, "processing", 0, "")
+	log.Printf("Finalizing upload for session %s, strategy: %s", sessionID.Hex(), req.Strategy)
+
+	// Update status to processing BEFORE starting goroutine
+	if err := fileprocessor.UpdateSessionStatus(r.Context(), sessionID, "processing", 0, "Starting..."); err != nil {
+		log.Printf("Failed to update status to processing: %v", err)
+		http.Error(w, "failed to update status", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Starting background processing goroutine for session %s", sessionID.Hex())
 
 	// Process file asynchronously
-	go processAndUploadFile(r.Context(), session, req.Strategy, req.ManualChunkSizes, userID)
+	go processAndUploadFile(context.Background(), session, req.Strategy, req.ManualChunkSizes, userID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -180,6 +196,8 @@ func FinalizeUploadHandler(w http.ResponseWriter, r *http.Request) {
 		"session_id": sessionID.Hex(),
 		"status_url": fmt.Sprintf("/api/files/upload/status/%s", sessionID.Hex()),
 	})
+
+	log.Printf("Finalize response sent for session %s", sessionID.Hex())
 }
 
 // GetUploadStatusHandler - GET /api/files/upload/status/:id
@@ -194,10 +212,20 @@ func GetUploadStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get session
-	session, err := fileprocessor.GetSession(r.Context(), sessionID, userID)
+	// Get session - but DON'T validate ownership or expiry for status checks
+	session, err := store.GetUploadSession(r.Context(), sessionID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "failed to get session", http.StatusInternalServerError)
+		return
+	}
+	if session == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify ownership
+	if session.UserID != userID {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -272,10 +300,12 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 	}()
 
 	// Step 1: Obfuscate file (10%)
+	log.Printf("Starting obfuscation for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 10, "Injecting noise...")
 
 	seed, err := fileprocessor.GenerateObfuscationSeed()
 	if err != nil {
+		log.Printf("Failed to generate seed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 10, fmt.Sprintf("Failed to generate seed: %v", err))
 		return
 	}
@@ -283,35 +313,45 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 	obfuscatedPath := session.TempFilePath + ".obfuscated"
 	obfMetadata, processedSize, err := fileprocessor.ObfuscateFile(session.TempFilePath, obfuscatedPath, seed)
 	if err != nil {
+		log.Printf("Obfuscation failed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 10, fmt.Sprintf("Obfuscation failed: %v", err))
 		return
 	}
 	defer os.Remove(obfuscatedPath)
+	log.Printf("Obfuscation complete for session %s, size: %d", sessionID.Hex(), processedSize)
 
 	// Step 2: Get drive spaces (20%)
+	log.Printf("Checking drive spaces for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 20, "Checking drive spaces...")
 
 	driveSpaces, err := drivemanager.GetUserDriveSpaces(ctx, userID)
 	if err != nil {
+		log.Printf("Failed to get drive spaces: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 20, fmt.Sprintf("Failed to get drive spaces: %v", err))
 		return
 	}
+	log.Printf("Found %d drives for session %s", len(driveSpaces), sessionID.Hex())
 
 	// Step 3: Calculate chunking plan (30%)
+	log.Printf("Calculating chunking plan for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 30, "Calculating chunk distribution...")
 
 	plan, err := fileprocessor.CalculateChunkPlan(processedSize, driveSpaces, strategy, manualSizes)
 	if err != nil {
+		log.Printf("Chunking calculation failed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 30, fmt.Sprintf("Chunking calculation failed: %v", err))
 		return
 	}
+	log.Printf("Chunking plan created: %d chunks for session %s", len(plan), sessionID.Hex())
 
 	// Step 4: Split file into chunks (50%)
+	log.Printf("Splitting file for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 50, "Splitting file into chunks...")
 
 	chunkDir := filepath.Dir(obfuscatedPath)
 	chunkPaths, err := fileprocessor.SplitFile(obfuscatedPath, chunkDir, plan)
 	if err != nil {
+		log.Printf("File splitting failed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 50, fmt.Sprintf("File splitting failed: %v", err))
 		return
 	}
@@ -320,20 +360,26 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 			os.Remove(path)
 		}
 	}()
+	log.Printf("File split into %d chunks for session %s", len(chunkPaths), sessionID.Hex())
 
 	// Step 5: Upload chunks to drives (90%)
+	log.Printf("Uploading chunks to drives for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 70, "Uploading chunks to drives...")
 
 	chunkMetadata, err := drivemanager.UploadChunksToDrivers(ctx, chunkPaths, plan, func(current, total int) {
 		progress := 70 + (20 * float64(current) / float64(total))
+		log.Printf("Upload progress for session %s: chunk %d/%d (%.1f%%)", sessionID.Hex(), current, total, progress)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", progress, fmt.Sprintf("Uploading chunk %d/%d...", current, total))
 	})
 	if err != nil {
+		log.Printf("Upload failed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 70, fmt.Sprintf("Upload failed: %v", err))
 		return
 	}
+	log.Printf("All chunks uploaded for session %s", sessionID.Hex())
 
 	// Step 6: Generate key file (95%)
+	log.Printf("Generating key file for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 95, "Generating key file...")
 
 	keyFilePath := filepath.Join(chunkDir, session.OriginalFilename+".2xpfm.key")
@@ -345,13 +391,13 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 		chunkMetadata,
 		keyFilePath,
 	); err != nil {
+		log.Printf("Key file generation failed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 95, fmt.Sprintf("Key file generation failed: %v", err))
 		return
 	}
 
 	// Step 7: Complete (100%)
+	log.Printf("Processing complete for session %s. Key file: %s", sessionID.Hex(), keyFilePath)
 	fileprocessor.CompleteSession(ctx, sessionID)
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "complete", 100, "")
-
-	log.Printf("File processing complete for session %s. Key file: %s", sessionID.Hex(), keyFilePath)
 }
