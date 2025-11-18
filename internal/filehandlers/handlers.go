@@ -401,7 +401,8 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 			return
 		}
 
-		// Get drive ID for this account
+		// FIXED BLOCK — manifest fetched BEFORE creating StoredChunk
+		// Get drive/account details
 		account, err := store.GetDriveAccountByID(ctx, chunk.DriveAccountID)
 		if err != nil {
 			log.Printf("Failed to get account: %v", err)
@@ -409,10 +410,23 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 			return
 		}
 
+		manifest, manifestFileID, err := drivemanager.GetOrCreateManifest(ctx, chunk.DriveAccountID)
+		if err != nil {
+			log.Printf("Failed to get manifest: %v", err)
+			fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", progress, "Failed to update manifest")
+			return
+		}
+
+		driveID := account.DriveID
+		if driveID == "" && manifest != nil {
+			driveID = manifest.DriveID
+		}
+
+		// Store chunk with correct driveID
 		storedChunk := models.StoredChunk{
 			ChunkID:        chunk.ChunkID,
 			DriveAccountID: chunk.DriveAccountID,
-			DriveID:        account.DriveID,
+			DriveID:        driveID,
 			DriveFileID:    driveFileID,
 			Filename:       filename,
 			Size:           chunk.Size,
@@ -423,13 +437,6 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 		storedChunks = append(storedChunks, storedChunk)
 
 		// Update manifest on drive with retry
-		_, mfid, err := drivemanager.GetOrCreateManifest(ctx, chunk.DriveAccountID)
-		if err != nil {
-			log.Printf("Failed to get manifest: %v", err)
-			fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", progress, "Failed to update manifest")
-			return
-		}
-
 		manifestFile := models.ManifestFile{
 			FileID:           fileID,
 			OriginalFilename: session.OriginalFilename,
@@ -445,11 +452,12 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 			},
 		}
 
-		if err := drivemanager.AddFileToManifest(ctx, chunk.DriveAccountID, mfid, manifestFile); err != nil {
+		if err := drivemanager.AddFileToManifest(ctx, chunk.DriveAccountID, manifestFileID, manifestFile); err != nil {
 			log.Printf("Failed to update manifest: %v", err)
 			// Don't fail the entire upload, but log the error
 		}
 	}
+
 	log.Printf("All chunks uploaded for session %s", sessionID.Hex())
 
 	// Step 6: Save stored file record (93%)

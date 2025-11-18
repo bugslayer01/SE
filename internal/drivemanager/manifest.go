@@ -42,7 +42,26 @@ func GetOrCreateManifest(ctx context.Context, accountID primitive.ObjectID) (*mo
 	// Try to find existing manifest
 	manifestFileID, manifest, err := findManifest(client)
 	if err == nil && manifest != nil {
-		// Manifest exists, return it
+		// Backfill missing DriveID for legacy manifests
+		if manifest.DriveID == "" {
+			driveID := account.DriveID
+			if driveID == "" {
+				driveID = primitive.NewObjectID().Hex()[:16]
+			}
+
+			manifest.DriveID = driveID
+
+			if err := UpdateManifest(ctx, accountID, manifestFileID, manifest); err != nil {
+				return nil, "", fmt.Errorf("failed to backfill manifest drive_id: %w", err)
+			}
+
+			if account.DriveID == "" {
+				if err := store.UpdateDriveAccountDriveID(ctx, accountID, driveID); err != nil {
+					return nil, "", fmt.Errorf("failed to persist drive_id: %w", err)
+				}
+			}
+		}
+
 		return manifest, manifestFileID, nil
 	}
 

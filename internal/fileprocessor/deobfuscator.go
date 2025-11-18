@@ -11,55 +11,67 @@ import (
 )
 
 // DeobfuscateFile removes noise injection from an obfuscated file
-func DeobfuscateFile(inputPath, outputPath string, metadata *models.ObfuscationMetadata) error {
-	// Decode seed from base64
+func DeobfuscateFile(inputPath, outputPath string, metadata *models.ObfuscationMetadata, originalSize int64) error {
+	if metadata == nil {
+		return fmt.Errorf("obfuscation metadata required")
+	}
+	if originalSize <= 0 {
+		return fmt.Errorf("invalid original size: %d", originalSize)
+	}
+	if metadata.BlockSize <= 0 {
+		return fmt.Errorf("invalid block size: %d", metadata.BlockSize)
+	}
+
 	seed, err := base64.StdEncoding.DecodeString(metadata.Seed)
 	if err != nil {
 		return fmt.Errorf("failed to decode seed: %w", err)
 	}
 
-	// Open input file
 	inFile, err := os.Open(inputPath)
 	if err != nil {
 		return err
 	}
 	defer inFile.Close()
 
-	// Get file size
 	stat, err := inFile.Stat()
 	if err != nil {
 		return err
 	}
 	processedSize := stat.Size()
+	if originalSize > processedSize {
+		return fmt.Errorf("original size %d exceeds processed size %d", originalSize, processedSize)
+	}
 
-	// Create output file
 	outFile, err := os.Create(outputPath)
 	if err != nil {
 		return err
 	}
 	defer outFile.Close()
 
-	// Initialize ChaCha20 cipher with same seed
 	nonce := make([]byte, 12)
 	cipher, err := chacha20.NewUnauthenticatedCipher(seed, nonce)
 	if err != nil {
 		return err
 	}
 
-	// Calculate original injection points (same algorithm as obfuscation)
-	targetOverhead := int64(float64(processedSize) * (metadata.OverheadPct / (100.0 + metadata.OverheadPct)))
-	numInjections := targetOverhead / int64(metadata.BlockSize)
-	if numInjections == 0 {
-		numInjections = 1
+	blockSize := int64(metadata.BlockSize)
+	noiseBytes := processedSize - originalSize
+	if noiseBytes < 0 {
+		return fmt.Errorf("negative noise bytes: %d", noiseBytes)
 	}
 
-	// Calculate approximate original size
-	originalSize := processedSize - (numInjections * int64(metadata.BlockSize))
+	var injectionOffsets []int64
+	if noiseBytes > 0 {
+		if noiseBytes%blockSize != 0 {
+			return fmt.Errorf("noise bytes (%d) not aligned to block size (%d)", noiseBytes, blockSize)
+		}
+		numInjections := noiseBytes / blockSize
+		if numInjections > 0 {
+			injectionOffsets = generateInjectionOffsets(cipher, originalSize, numInjections, int64(metadata.MinGap))
+			injectionOffsets = adjustOffsetsForProcessedFile(injectionOffsets, blockSize)
+		}
+	}
 
-	// Generate injection offsets (same as during obfuscation)
-	injectionOffsets := generateInjectionOffsets(cipher, originalSize, numInjections, int64(metadata.MinGap))
-
-	// Perform streaming deobfuscation (skip noise blocks)
 	if err := streamRemoveNoise(inFile, outFile, injectionOffsets, metadata.BlockSize); err != nil {
 		os.Remove(outputPath)
 		return err
@@ -173,4 +185,20 @@ func ReconstructFile(chunkPaths []string, outputPath string) error {
 	}
 
 	return nil
+}
+
+func adjustOffsetsForProcessedFile(offsets []int64, blockSize int64) []int64 {
+	if blockSize <= 0 || len(offsets) == 0 {
+		return offsets
+	}
+
+	adjusted := make([]int64, len(offsets))
+	cumulativeShift := int64(0)
+
+	for i, offset := range offsets {
+		adjusted[i] = offset + cumulativeShift
+		cumulativeShift += blockSize
+	}
+
+	return adjusted
 }

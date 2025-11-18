@@ -155,18 +155,22 @@ func InitiateDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	driveMap := make(map[string]bool)
+	accountMap := make(map[primitive.ObjectID]bool)
 	for _, acc := range userAccounts {
 		if acc.DriveID != "" {
 			driveMap[acc.DriveID] = true
 		}
+		accountMap[acc.ID] = true
 	}
 
 	for _, chunk := range storedFile.Chunks {
-		if !driveMap[chunk.DriveID] {
-			log.Printf("Drive not available for chunk: drive_id=%s", chunk.DriveID)
-			http.Error(w, fmt.Sprintf("drive not available for chunk %d", chunk.ChunkID), http.StatusBadRequest)
-			return
+		if (chunk.DriveID != "" && driveMap[chunk.DriveID]) ||
+			(!chunk.DriveAccountID.IsZero() && accountMap[chunk.DriveAccountID]) {
+			continue
 		}
+		log.Printf("Drive not available for chunk: drive_id=%s account_id=%s", chunk.DriveID, chunk.DriveAccountID.Hex())
+		http.Error(w, fmt.Sprintf("drive not available for chunk %d", chunk.ChunkID), http.StatusBadRequest)
+		return
 	}
 
 	// Create download session
@@ -265,10 +269,19 @@ func DownloadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reconstructedPath := session.ReconstructedPath
+	if reconstructedPath == "" && session.TempFilePath != "" {
+		reconstructedPath = session.TempFilePath + "_reconstructed"
+	}
+	if reconstructedPath == "" {
+		http.Error(w, "reconstructed file unavailable", http.StatusInternalServerError)
+		return
+	}
+
 	// Open reconstructed file
-	file, err := os.Open(session.ReconstructedPath)
+	file, err := os.Open(reconstructedPath)
 	if err != nil {
-		log.Printf("Failed to open reconstructed file: %v", err)
+		log.Printf("Failed to open reconstructed file (%s): %v", reconstructedPath, err)
 		http.Error(w, "file not found", http.StatusNotFound)
 		return
 	}
@@ -289,11 +302,17 @@ func DownloadFileHandler(w http.ResponseWriter, r *http.Request) {
 	// Stream file
 	io.Copy(w, file)
 
+	pathToCleanup := reconstructedPath
+	tempPath := session.TempFilePath
 	// Schedule cleanup after some delay
 	go func() {
 		time.Sleep(5 * time.Minute)
-		os.Remove(session.ReconstructedPath)
-		os.Remove(session.TempFilePath)
+		if pathToCleanup != "" {
+			os.Remove(pathToCleanup)
+		}
+		if tempPath != "" {
+			os.Remove(tempPath)
+		}
 	}()
 }
 
@@ -361,12 +380,11 @@ func processDownload(ctx context.Context, sessionID primitive.ObjectID, storedFi
 	// Step 4: Deobfuscate (20% progress)
 	store.UpdateDownloadSessionStatus(ctx, sessionID, "decrypting", 75, "Removing obfuscation...")
 	reconstructedPath := session.TempFilePath + "_reconstructed"
-	if err := fileprocessor.DeobfuscateFile(obfuscatedPath, reconstructedPath, &key.Obfuscation); err != nil {
+	if err := fileprocessor.DeobfuscateFile(obfuscatedPath, reconstructedPath, &key.Obfuscation, key.OriginalSize); err != nil {
 		log.Printf("Deobfuscation failed: %v", err)
 		store.UpdateDownloadSessionStatus(ctx, sessionID, "failed", 75, "Deobfuscation failed")
 		return
 	}
-
 	// Step 5: Update session with reconstructed path
 	store.UpdateDownloadSessionStatus(ctx, sessionID, "decrypting", 95, "Finalizing...")
 
@@ -417,17 +435,21 @@ func VerifyFileIntegrityHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	driveMap := make(map[string]bool)
+	accountMap := make(map[primitive.ObjectID]bool)
 	for _, acc := range userAccounts {
 		if acc.DriveID != "" {
 			driveMap[acc.DriveID] = true
 		}
+		accountMap[acc.ID] = true
 	}
 
 	missingChunks := []int{}
 	for _, chunk := range storedFile.Chunks {
-		if !driveMap[chunk.DriveID] {
-			missingChunks = append(missingChunks, chunk.ChunkID)
+		if (chunk.DriveID != "" && driveMap[chunk.DriveID]) ||
+			(!chunk.DriveAccountID.IsZero() && accountMap[chunk.DriveAccountID]) {
+			continue
 		}
+		missingChunks = append(missingChunks, chunk.ChunkID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
