@@ -1,12 +1,12 @@
 package fileprocessor
 
 import (
-	"SE/internal/models"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
 	"io"
 	"os"
 	"strconv"

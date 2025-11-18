@@ -1,9 +1,9 @@
 package fileprocessor
 
 import (
-	"SE/internal/models"
 	"encoding/json"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
 	"os"
 	"time"
 )

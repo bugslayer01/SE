@@ -1,9 +1,9 @@
 package fileprocessor
 
 import (
-	"SE/internal/models"
 	"errors"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
 	"io"
 	"os"
 	"sort"

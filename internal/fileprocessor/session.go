@@ -1,11 +1,11 @@
 package fileprocessor
 
 import (
-	"SE/internal/models"
-	"SE/internal/store"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"os"
 	"path/filepath"
 	"strconv"

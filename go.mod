@@ -1,4 +1,4 @@
-module SE
+module github.com/VidhuSarwal/vcrypt_backshot.git
 
 go 1.24.0
 

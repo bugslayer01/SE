@@ -1,12 +1,12 @@
 package auth
 
 import (
-	"SE/internal/models"
-	"SE/internal/store"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"net/http"
 	"os"
 	"strings"

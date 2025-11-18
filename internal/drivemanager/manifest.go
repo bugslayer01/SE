@@ -1,13 +1,13 @@
 package drivemanager
 
 import (
-	"SE/internal/models"
-	"SE/internal/oauth"
-	"SE/internal/store"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/oauth"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"io"
 	"net/http"
 	"time"

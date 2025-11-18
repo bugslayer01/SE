@@ -1,14 +1,14 @@
 package downloadhandlers
 
 import (
-	"SE/internal/drivemanager"
-	"SE/internal/fileprocessor"
-	"SE/internal/models"
-	"SE/internal/store"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/drivemanager"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/fileprocessor"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"io"
 	"log"
 	"net/http"

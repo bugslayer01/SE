@@ -1,8 +1,6 @@
 package oauth
 
 import (
-	"SE/internal/models"
-	"SE/internal/store"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/models"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"io"
 	"log"
 	"net/http"

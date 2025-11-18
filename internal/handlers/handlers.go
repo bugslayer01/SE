@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"SE/internal/store"
 	"encoding/json"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"net/http"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
