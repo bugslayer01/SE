@@ -9,6 +9,7 @@ import (
 	"SE/internal/oauth"
 	"SE/internal/store"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -56,6 +57,9 @@ func main() {
 	// Setup routes
 	mux := http.NewServeMux()
 
+	// Health check route
+	mux.HandleFunc("/health", requireMethod("GET", healthCheckHandler))
+
 	// Authentication routes
 	mux.HandleFunc("/api/signup", requireMethod("POST", auth.SignupHandler))
 	mux.HandleFunc("/api/login", requireMethod("POST", auth.LoginHandler))
@@ -89,6 +93,17 @@ func main() {
 	if err := http.ListenAndServe(addr, middleware.Logger(handler)); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	response := map[string]interface{}{
+		"status": "healthy",
+		"message": "Server is running",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
 func requireMethod(verb string, h http.HandlerFunc) http.HandlerFunc {
